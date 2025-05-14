@@ -21,3 +21,13 @@ func SafeGo(fnc func(ex error)) {
 	})
 	fnc(nil)
 }
+
+func GetOrDefault[T any](fn func() T, defaultValue T) (result T) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("GetOrDefault panic recovered: %v\nStack trace: %s", r, string(debug.Stack()))
+			result = defaultValue
+		}
+	}()
+	return fn()
+}
