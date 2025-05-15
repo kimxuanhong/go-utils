@@ -2,11 +2,12 @@ package config
 
 import (
 	"fmt"
-	"gopkg.in/yaml.v3"
+	"github.com/spf13/viper"
 	"log"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 )
 
 // LoadConfig loads configuration from YAML files and overrides values from environment variables.
@@ -18,74 +19,51 @@ import (
 //     and the environment has a value for it, then override it.
 func LoadConfig[T any]() (*T, error) {
 	var cfg T
-
 	// Kiểm tra: cfg phải là struct (dù đã dùng generic)
 	v := reflect.ValueOf(&cfg).Elem()
 	if v.Kind() != reflect.Struct {
 		return nil, fmt.Errorf("LoadConfig only works with struct types, got %s", v.Kind())
 	}
+	LoadConfigFile()
 
-	basePath := "resources"
-	mainConfig := filepath.Join(basePath, "config.yml")
-
-	// Step 1: Load base config
-	if err := loadYAML(mainConfig, &cfg); err != nil {
-		return nil, fmt.Errorf("failed to load main config: %w", err)
+	if err := viper.Unmarshal(&cfg); err != nil {
+		log.Fatalf("Can not unmarshal config into struct: %v", err)
 	}
-
-	// Step 2: Optional override with CONFIG env
-	if overrideFile := os.Getenv("CONFIG"); overrideFile != "" {
-		envConfig := filepath.Join(basePath, overrideFile)
-		if _, err := os.Stat(envConfig); err == nil {
-			if err := loadYAML(envConfig, &cfg); err != nil {
-				return nil, fmt.Errorf("failed to load override config: %w", err)
-			}
-		} else {
-			log.Printf("Override config file %s not found, skipping\n", envConfig)
-		}
-	}
-
-	// Step 3: Override string fields with ENV values
-	resolveEnvValues(&cfg)
-
 	return &cfg, nil
 }
 
-// loadYAML unmarshals YAML file into cfg
-func loadYAML(file string, cfg interface{}) error {
-	f, err := os.Open(file)
-	if err != nil {
-		return err
-	}
-	defer func(f *os.File) {
-		_ = f.Close() // Safe to ignore close error
-	}(f)
+func ResolveEnvInViper() {
+	settings := viper.AllSettings()
 
-	decoder := yaml.NewDecoder(f)
-	return decoder.Decode(cfg)
+	for key, value := range settings {
+		// Chỉ xử lý nếu là string
+		if strVal, ok := value.(string); ok {
+			// Nếu giá trị là tên biến môi trường và tồn tại
+			if envVal, exists := os.LookupEnv(strVal); exists {
+				viper.Set(key, envVal)
+			}
+		}
+	}
 }
 
-// resolveEnvValues replaces string fields with matching ENV values
-func resolveEnvValues(cfg interface{}) {
-	v := reflect.ValueOf(cfg).Elem()
+func LoadConfigFile() {
+	dir, _ := os.Getwd()
+	// Load default config
+	configPath := filepath.Join(dir, "./resources")
+	viper.SetConfigType("yaml")
+	viper.AddConfigPath(configPath)
+	if err := viper.ReadInConfig(); err != nil {
+		log.Fatalf("Can not load config.yml: %v", filepath.Join(configPath, "config.yml"))
+	}
 
-	for i := 0; i < v.NumField(); i++ {
-		fieldVal := v.Field(i)
-
-		// Skip if field cannot be set (unexported/private)
-		if !fieldVal.CanSet() {
-			continue
-		}
-
-		switch fieldVal.Kind() {
-		case reflect.Struct:
-			resolveEnvValues(fieldVal.Addr().Interface())
-		case reflect.String:
-			envKey := fieldVal.String()
-			if envVal := os.Getenv(envKey); envVal != "" {
-				fieldVal.SetString(envVal)
-			}
-		default:
+	// Check environment (ví dụ: dev, prod...)
+	env := strings.ToLower(os.Getenv("APP_ENV"))
+	if env != "" {
+		viper.SetConfigName("config-" + env)
+		err := viper.MergeInConfig()
+		if err != nil {
+			return
 		}
 	}
+	ResolveEnvInViper()
 }
